@@ -58,6 +58,7 @@ struct device;
 struct phy_device;
 struct dsa_switch_tree;
 struct macsec_context;
+struct macsec_ops;
 
 /* 802.11 specific */
 struct wireless_dev;
@@ -1704,6 +1705,8 @@ enum netdev_priv_flags {
  *				that follow this device when it is moved
  *				to another network namespace.
  *
+ *	@macsec_ops:    MACsec offloading ops
+ *
  *	FIXME: cleanup struct net_device such that network protocol info
  *	moves out.
  */
@@ -1990,6 +1993,11 @@ struct net_device {
 #endif
 
 	struct list_head	net_notifier_list;
+
+#if IS_ENABLED(CONFIG_MACSEC)
+	/* MACsec management functions */
+	const struct macsec_ops *macsec_ops;
+#endif
 };
 #define to_net_dev(d) container_of(d, struct net_device, dev)
 
