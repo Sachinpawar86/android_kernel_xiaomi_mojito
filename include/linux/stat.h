@@ -47,6 +47,7 @@ struct kstat {
 	struct timespec	ctime;
 	struct timespec	btime;			/* File creation time */
 	u64		blocks;
+	u64		mnt_id;
 };
 
 #endif
