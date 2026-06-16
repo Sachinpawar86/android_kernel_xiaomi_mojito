@@ -338,7 +338,6 @@ extern pgprot_t protection_map[16];
 #define FAULT_FLAG_INSTRUCTION  0x100	/* The fault was during an instruction fetch */
 /* Speculative fault, not holding mmap_sem */
 #define FAULT_FLAG_SPECULATIVE	0x200
-#define FAULT_FLAG_PREFAULT_OLD 0x400   /* Make faultaround ptes old */
 
 #define FAULT_FLAG_TRACE \
 	{ FAULT_FLAG_WRITE,		"WRITE" }, \
@@ -2949,8 +2948,6 @@ void __init setup_nr_node_ids(void);
 #else
 static inline void setup_nr_node_ids(void) {}
 #endif
-
-extern int want_old_faultaround_pte;
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */
