@@ -241,9 +241,9 @@ struct vmpressure *memcg_to_vmpressure(struct mem_cgroup *memcg)
 	return &memcg->vmpressure;
 }
 
-struct cgroup_subsys_state *vmpressure_to_css(struct vmpressure *vmpr)
+struct mem_cgroup *vmpressure_to_memcg(struct vmpressure *vmpr)
 {
-	return &container_of(vmpr, struct mem_cgroup, vmpressure)->css;
+	return container_of(vmpr, struct mem_cgroup, vmpressure);
 }
 
 #ifndef CONFIG_SLOB
@@ -4362,7 +4362,10 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	vmpressure_init(&memcg->vmpressure);
 	INIT_LIST_HEAD(&memcg->event_list);
 	spin_lock_init(&memcg->event_list_lock);
-	memcg->socket_pressure = jiffies;
+	memcg->socket_pressure = get_jiffies_64();
+#if BITS_PER_LONG < 64
+	seqlock_init(&memcg->socket_pressure_seqlock);
+#endif
 #ifndef CONFIG_SLOB
 	memcg->kmemcg_id = -1;
 #endif
@@ -6232,6 +6235,9 @@ void mem_cgroup_uncharge_swap(swp_entry_t entry, unsigned int nr_pages)
 	unsigned short id;
 
 	if (!do_swap_account)
+		return;
+
+	if (mem_cgroup_disabled())
 		return;
 
 	id = swap_cgroup_record(entry, 0, nr_pages);

@@ -61,7 +61,7 @@ enum zram_pageflags {
 struct zram_entry {
 	struct rb_node rb_node;
 	u32 len;
-	u64 checksum;
+	u32 checksum;
 	unsigned long refcount;
 	unsigned long handle;
 };
@@ -141,6 +141,7 @@ struct zram {
 	bool wb_limit_enable;
 	u64 bd_wb_limit;
 	struct block_device *bdev;
+	unsigned int old_block_size;
 	unsigned long *bitmap;
 	unsigned long nr_pages;
 #endif
