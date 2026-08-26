@@ -1,0 +1,138 @@
+name: Build Kernel
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KERNEL_REPO: Sachinpawar86/android_kernel_xiaomi_mojito
+  KERNEL_BRANCH: "16.2"
+  AK3_REPO: sp-projectss/AnyKernel3
+  AK3_BRANCH: mojito
+  CLANG_VERSION: clang-r596125
+  CLANG_BRANCH: main-kernel
+  DEFCONFIG: mojito_defconfig
+  DEVICE_DTB: sm6150.dtb
+  ZIP_PREFIX: WESTCOAST-KSU-mojito
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+          sudo apt-get clean
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex libssl-dev libelf-dev libncurses-dev \
+            build-essential ccache curl git zip \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.KERNEL_REPO }}
+          ref: ${{ env.KERNEL_BRANCH }}
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.AK3_REPO }}
+          ref: ${{ env.AK3_BRANCH }}
+          path: anykernel
+          fetch-depth: 1
+
+      - name: Enable ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ env.DEFCONFIG }}
+
+      - name: Fetch clang toolchain
+        run: |
+          mkdir -p "$CLANG_VERSION"
+          curl -fsSL \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/${CLANG_VERSION}.tar.gz" \
+            | tar -xz -C "$CLANG_VERSION"
+
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          export PATH="${GITHUB_WORKSPACE}/${CLANG_VERSION}/bin:${PATH}"
+          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/${CLANG_VERSION}/lib:${GITHUB_WORKSPACE}/${CLANG_VERSION}/lib64"
+
+          make O=out ARCH=arm64 "${DEFCONFIG}"
+
+          make -j"$(nproc)" O=out ARCH=arm64 SUBARCH=arm64 \
+            CC="ccache clang" \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            LD="ld.lld -S" \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            STRIP=llvm-strip \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            INSTALL_MOD_STRIP=1 \
+            KBUILD_BUILD_USER="${{ github.actor }}" \
+            KBUILD_BUILD_HOST="github-actions"
+
+          ccache -s
+
+      - name: Verify build output
+        run: |
+          test -f kernel/out/arch/arm64/boot/Image || {
+            echo "::error::kernel Image not found, build failed"
+            exit 1
+          }
+
+      - name: Package flashable zip
+        run: |
+          IMG_DIR="kernel/out/arch/arm64/boot"
+
+          cp "${IMG_DIR}/Image" anykernel/Image
+          [ -f "${IMG_DIR}/dtbo.img" ] && cp "${IMG_DIR}/dtbo.img" anykernel/dtbo.img
+
+          # only the device's own dtb — concatenating the whole dts/ tree
+          # pulls in unrelated SoC blobs and breaks device tree matching
+          dtb_path="$(find "${IMG_DIR}/dts" -name "${DEVICE_DTB}" -print -quit)"
+          test -n "${dtb_path}" || {
+            echo "::error::${DEVICE_DTB} not found under ${IMG_DIR}/dts"
+            exit 1
+          }
+          cat "${dtb_path}" > anykernel/dtb
+
+          zip_name="${ZIP_PREFIX}-$(date +%Y%m%d-%H%M).zip"
+          (cd anykernel && zip -r9 "../${zip_name}" . -x ".git*" "README.md")
+
+          echo "ZIP_NAME=${zip_name}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 14
+
+      - name: Build summary
+        run: |
+          {
+            echo "### Build complete"
+            echo "- Kernel: \`${KERNEL_REPO}@${KERNEL_BRANCH}\`"
+            echo "- Defconfig: \`${DEFCONFIG}\`"
+            echo "- Artifact: \`${ZIP_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
