@@ -1,41 +1,40 @@
-name: Build Kernel
+name: Build WESTCOAST-KSU Kernel (mojito)
 
 on:
   workflow_dispatch:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+    inputs:
+      release:
+        description: "Create a GitHub Release with the zip"
+        type: boolean
+        default: true
 
 env:
   KERNEL_REPO: Sachinpawar86/android_kernel_xiaomi_mojito
   KERNEL_BRANCH: "16.2"
   AK3_REPO: sp-projectss/AnyKernel3
   AK3_BRANCH: mojito
-  CLANG_VERSION: clang-r596125
-  CLANG_BRANCH: main-kernel
+  CLANG_VER: clang-r596125
+  CLANG_AOSP_BRANCH: main-kernel
   DEFCONFIG: mojito_defconfig
-  DEVICE_DTB: sm6150.dtb
-  ZIP_PREFIX: WESTCOAST-KSU-mojito
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
     steps:
-      - name: Free disk space
+      - name: Free up disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
           sudo apt-get clean
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison flex libssl-dev libelf-dev libncurses-dev \
+            bc bison flex libssl-dev libelf-dev \
             build-essential ccache curl git zip \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+            python3 python3-pip \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
+            libncurses-dev
 
       - name: Checkout kernel source
         uses: actions/checkout@v4
@@ -50,41 +49,42 @@ jobs:
         with:
           repository: ${{ env.AK3_REPO }}
           ref: ${{ env.AK3_BRANCH }}
-          path: anykernel
+          path: AnyKernel3
           fetch-depth: 1
 
-      - name: Enable ccache
+      - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: ${{ env.DEFCONFIG }}
 
-      - name: Fetch clang toolchain
+      - name: Download clang toolchain (AOSP mirror)
         run: |
-          mkdir -p "$CLANG_VERSION"
-          curl -fsSL \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/${CLANG_VERSION}.tar.gz" \
-            | tar -xz -C "$CLANG_VERSION"
+          mkdir -p ${{ env.CLANG_VER }}
+          curl -s "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${{ env.CLANG_AOSP_BRANCH }}/${{ env.CLANG_VER }}.tar.gz" \
+            | tar -xz -C ${{ env.CLANG_VER }}
 
       - name: Build kernel
         working-directory: kernel
         run: |
-          export PATH="${GITHUB_WORKSPACE}/${CLANG_VERSION}/bin:${PATH}"
-          export LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/${CLANG_VERSION}/lib:${GITHUB_WORKSPACE}/${CLANG_VERSION}/lib64"
+          CLANG_DIR="${GITHUB_WORKSPACE}/${{ env.CLANG_VER }}"
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export LD_LIBRARY_PATH="$CLANG_DIR/lib:$CLANG_DIR/lib64:$LD_LIBRARY_PATH"
+          echo "$PATH"
 
-          make O=out ARCH=arm64 "${DEFCONFIG}"
+          make O=out ARCH=arm64 ${{ env.DEFCONFIG }}
 
-          make -j"$(nproc)" O=out ARCH=arm64 SUBARCH=arm64 \
+          make -j$(nproc) ARCH=arm64 SUBARCH=arm64 O=out \
             CC="ccache clang" \
-            AR=llvm-ar \
-            NM=llvm-nm \
+            AR="llvm-ar" \
+            NM="llvm-nm" \
             LD="ld.lld -S" \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+            OBJCOPY="llvm-objcopy" \
+            OBJDUMP="llvm-objdump" \
+            STRIP="llvm-strip" \
+            CLANG_TRIPLE="aarch64-linux-gnu-" \
+            CROSS_COMPILE="aarch64-linux-gnu-" \
+            CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+            CROSS_COMPILE_COMPAT="arm-linux-gnueabi-" \
             LLVM=1 \
             LLVM_IAS=1 \
             INSTALL_MOD_STRIP=1 \
@@ -93,46 +93,45 @@ jobs:
 
           ccache -s
 
-      - name: Verify build output
+      - name: Verify kernel Image exists
         run: |
-          test -f kernel/out/arch/arm64/boot/Image || {
-            echo "::error::kernel Image not found, build failed"
+          if [ ! -f kernel/out/arch/arm64/boot/Image ]; then
+            echo "::error::Image not found — build failed"
             exit 1
-          }
+          fi
 
-      - name: Package flashable zip
+      - name: Package into AnyKernel3 zip
         run: |
-          IMG_DIR="kernel/out/arch/arm64/boot"
+          cp kernel/out/arch/arm64/boot/Image AnyKernel3/
+          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && cp kernel/out/arch/arm64/boot/dtbo.img AnyKernel3/ || true
 
-          cp "${IMG_DIR}/Image" anykernel/Image
-          [ -f "${IMG_DIR}/dtbo.img" ] && cp "${IMG_DIR}/dtbo.img" anykernel/dtbo.img
-
-          # only the device's own dtb — concatenating the whole dts/ tree
-          # pulls in unrelated SoC blobs and breaks device tree matching
-          dtb_path="$(find "${IMG_DIR}/dts" -name "${DEVICE_DTB}" -print -quit)"
-          test -n "${dtb_path}" || {
-            echo "::error::${DEVICE_DTB} not found under ${IMG_DIR}/dts"
+          SM6150_DTB=$(find kernel/out/arch/arm64/boot/dts -name "sm6150.dtb" | head -n1)
+          if [ -n "$SM6150_DTB" ]; then
+            cat "$SM6150_DTB" > AnyKernel3/dtb
+            echo "Packed $SM6150_DTB as AnyKernel3/dtb"
+          else
+            echo "::error::sm6150.dtb not found under arch/arm64/boot/dts"
+            find kernel/out/arch/arm64/boot/dts -name "*.dtb"
             exit 1
-          }
-          cat "${dtb_path}" > anykernel/dtb
+          fi
 
-          zip_name="${ZIP_PREFIX}-$(date +%Y%m%d-%H%M).zip"
-          (cd anykernel && zip -r9 "../${zip_name}" . -x ".git*" "README.md")
+          cd AnyKernel3
+          ZIP_NAME="WESTCOAST-KSU-mojito-$(date +%Y%m%d-%H%M).zip"
+          zip -r9 "../$ZIP_NAME" * -x ".git*" -x "README.md"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
 
-          echo "ZIP_NAME=${zip_name}" >> "$GITHUB_ENV"
-
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
-          retention-days: 14
 
-      - name: Build summary
-        run: |
-          {
-            echo "### Build complete"
-            echo "- Kernel: \`${KERNEL_REPO}@${KERNEL_BRANCH}\`"
-            echo "- Defconfig: \`${DEFCONFIG}\`"
-            echo "- Artifact: \`${ZIP_NAME}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Create GitHub Release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: WESTCOAST-KSU ${{ github.run_number }}
+          files: ${{ env.ZIP_NAME }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
