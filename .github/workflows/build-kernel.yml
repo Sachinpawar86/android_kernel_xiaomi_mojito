@@ -10,7 +10,7 @@ on:
 
 env:
   KERNEL_REPO: Sachinpawar86/android_kernel_xiaomi_mojito
-  KERNEL_BRANCH: "16.2"
+  KERNEL_BRANCH: "KSU"
   AK3_REPO: sp-projectss/AnyKernel3
   AK3_BRANCH: mojito
   CLANG_VER: clang-r596125
@@ -126,12 +126,11 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
 
-      - name: Create GitHub Release
-        if: ${{ inputs.release }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: WESTCOAST-KSU ${{ github.run_number }}
-          files: ${{ env.ZIP_NAME }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build summary
+        run: |
+          {
+            echo "### Build complete"
+            echo "- Kernel: \`${KERNEL_REPO}@${KERNEL_BRANCH}\`"
+            echo "- Defconfig: \`${DEFCONFIG}\`"
+            echo "- Artifact: \`${ZIP_NAME}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
